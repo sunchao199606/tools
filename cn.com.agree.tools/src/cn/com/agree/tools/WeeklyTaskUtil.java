@@ -1,21 +1,37 @@
 package cn.com.agree.tools;
 
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.Font;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
-import org.xmind.core.*;
-import org.xmind.core.internal.dom.*;
+import org.apache.poi.ss.util.CellRangeAddress;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.junit.jupiter.api.Test;
+import org.xmind.core.Core;
+import org.xmind.core.CoreException;
+import org.xmind.core.IDeserializer;
+import org.xmind.core.ISerializer;
+import org.xmind.core.ISheet;
+import org.xmind.core.ITopic;
+import org.xmind.core.IWorkbook;
+import org.xmind.core.internal.dom.TopicImpl;
 
 /**
  * excel里面的周报转化为xmind格式
@@ -23,19 +39,24 @@ import org.xmind.core.internal.dom.*;
  * @author sunchao
  *
  */
-public class WeeklyTaskParser {
+public class WeeklyTaskUtil {
 
 	private static final String EXCEL_PATH = "E:\\89754\\weixin\\WeChat Files\\s_cgogogo\\FileStorage\\File\\2020-01\\周报_AB4.0市场支持与研发周报20200106-20200112.xlsx";
 	private static final String OUTPUT_DIR = "E:\\";
 
-	public static void main(String[] args) {
+	/**
+	 * 周报excel转xmind
+	 */
+	@Test
+	public void excelToXmind() {
 		// 1 加载excel数据
 		Workbook excelWorkbook = getWorkbook(EXCEL_PATH);
+
 		Map<String, Staff> staffMap = parseDataFromExcelWorkbook(excelWorkbook);
 		// 2 反序列化模板文件
 		IDeserializer deserializer = Core.getWorkbookBuilder().newDeserializer();
 		try {
-			String templateXmindPath = WeeklyTaskParser.class.getResource("./resources/template.xmind").getPath();
+			String templateXmindPath = WeeklyTaskUtil.class.getResource("./resources/template.xmind").getPath();
 			InputStream fileInputStream = new FileInputStream(templateXmindPath);
 			deserializer.setInputStream(fileInputStream);
 			deserializer.deserialize(null);
@@ -63,15 +84,152 @@ public class WeeklyTaskParser {
 		}
 	}
 
+	/**
+	 * 
+	 * 合并周报
+	 */
+	@Test()
+	public void mergeExcel() {
+		// 搜集excel数据
+		String excelPath = "C:\\Users\\89754\\Desktop\\个人周报";
+		File dir = new File(excelPath);
+		Map<String, List<Task>> taskMap = new HashMap<>();
+		List<Workbook> workbookList = new ArrayList<>();
+		for (File file : dir.listFiles()) {
+			Workbook wb = null;
+			try (InputStream is = new FileInputStream(file.getPath());) {
+				wb = WorkbookFactory.create(is);
+			} catch (Exception e) {
+				e.printStackTrace();
+			} finally {
+				if (wb != null) {
+					try {
+						wb.close();
+					} catch (IOException e) {
+						e.printStackTrace();
+					}
+				}
+			}
+			workbookList.add(wb);
+		}
+		// 合并数据
+		List<Map<String, Staff>> staffMapList = parseDataFromExcelWorkbooks(workbookList);
+		staffMapList.forEach(map -> {
+			map.entrySet().forEach(entry -> {
+				String key = entry.getKey().trim();
+				Staff staff = entry.getValue();
+				Collection<Task> tasks = staff.getTaskMap().values();
+				if (taskMap.containsKey(key)) {
+					taskMap.get(key).addAll(tasks);
+				} else {
+					List<Task> taskList = new ArrayList<>(tasks);
+					taskMap.put(key, taskList);
+				}
+			});
+		});
+
+		// 导出到excel
+		exportDataToExcel(taskMap);
+
+	}
+
+	/**
+	 * 数据导出到excel中
+	 * 
+	 * @param taskMap
+	 */
+	private void exportDataToExcel(Map<String, List<Task>> taskMap) {
+
+		Workbook workbook = new XSSFWorkbook();
+		// 生成一个表格
+		Sheet sheet = workbook.createSheet("2020上半年汇总");
+		// 设置表格默认列宽度为15个字节
+		sheet.setDefaultColumnWidth((short) 15);
+		// 生成表头样式
+		CellStyle style = workbook.createCellStyle();
+		Font font = workbook.createFont();
+		font.setBold(true);
+		style.setFont(font);
+		// 创建表头
+		Row row = sheet.createRow(0);
+		String[] titles = new String[] { "姓名", "TAPD需求ID", "问题类型", "市场版本", "需求标题" };
+		Map<String, Integer> titleOrder = new HashMap<>();
+		for (int i = 0; i < 5; i++) {
+			Cell cell = row.createCell(i);
+			cell.setCellStyle(style);
+			String title = titles[i];
+			cell.setCellValue(title);
+			titleOrder.put(title, i);
+		}
+		// 写入正文
+		AtomicInteger index = new AtomicInteger(1);
+		AtomicInteger startRow = new AtomicInteger(1);
+		AtomicInteger endRow = new AtomicInteger();
+		taskMap.entrySet().forEach(entry -> {
+			String name = entry.getKey();
+			// System.out.println(name);
+			List<Task> tasks = entry.getValue();
+			startRow.set(endRow.get() + 1);
+			// System.out.println(startRow);
+			endRow.set(startRow.get() + tasks.size() - 1);
+			// System.out.println(endRow);
+			for (Task task : tasks) {
+				Row r = sheet.createRow(index.get());
+				String id = task.getId() == null ? "" : task.getId();
+				if (id.startsWith("unknow")) {
+					id = "";
+				}
+				String type = task.getTaskType() == null ? "" : task.getTaskType().getTaskTypeDescription();
+				String market = task.getMarket() == null ? "" : task.getMarket();
+				String description = task.getTaskDescription() == null ? "" : task.getTaskDescription();
+				Cell nameCell = r.createCell(0);
+				nameCell.setCellValue(name);
+				Cell idCell = r.createCell(1);
+				idCell.setCellValue(id);
+				Cell typeCell = r.createCell(2);
+				typeCell.setCellValue(type);
+				Cell marketCell = r.createCell(3);
+				marketCell.setCellValue(market);
+				Cell descriptionCell = r.createCell(4);
+				descriptionCell.setCellValue(description);
+				index.incrementAndGet();
+			}
+			// System.out.println(endRow);
+			// 合并单元格
+			if (tasks.size() > 1) {
+				CellRangeAddress region = new CellRangeAddress(startRow.get(), endRow.get(), 0, 0);
+				sheet.addMergedRegion(region);
+			}
+		});
+
+		try (FileOutputStream outputStream = new FileOutputStream("D:\\周报汇总.xlsx");) {
+			workbook.write(outputStream);
+		} catch (Exception e) {
+			e.printStackTrace();
+		} finally {
+			try {
+				workbook.close();
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+		}
+	}
+
 	private static Map<String, Staff> parseDataFromExcelWorkbook(Workbook workbook) {
+		// System.out.println("*************************");
 		Sheet sheet = workbook.getSheetAt(0);
+		// System.out.println(sheet.getSheetName());
 		Map<String, Staff> staffMap = new HashMap<String, Staff>();
 		int seed = 0;
 		AtomicReference<String> cacheName = new AtomicReference<String>("");
 		// String cacheName = "";
 		for (int rowIndex = 0; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
 			Row row = sheet.getRow(rowIndex);
-			if (row == null || row.getCell(0).getStringCellValue().equals("姓名")) {
+			if (row.getCell(0) == null) {
+				System.out.println(sheet.getSheetName() + "第" + rowIndex++ + "行数据为空");
+				continue;
+			}
+			if (row == null || (row.getCell(0) != null && row.getCell(0).getStringCellValue().equals("姓名"))) {
 				System.out.println("过滤掉表头");
 				continue;
 			}
@@ -206,6 +364,14 @@ public class WeeklyTaskParser {
 		return staffMap;
 	}
 
+	private static List<Map<String, Staff>> parseDataFromExcelWorkbooks(List<Workbook> workbookList) {
+		List<Map<String, Staff>> staffMapList = new ArrayList<>();
+		for (Workbook workbook : workbookList) {
+			staffMapList.add(parseDataFromExcelWorkbook(workbook));
+		}
+		return staffMapList;
+	}
+
 	private static void putDataInXmindWorkbook(IWorkbook xmindWorkbook, Map<String, Staff> staffMap) {
 		ISheet sheet = xmindWorkbook.getPrimarySheet();
 		ITopic rootTopic = sheet.getRootTopic();
@@ -284,4 +450,5 @@ public class WeeklyTaskParser {
 		}
 		return wb;
 	}
+
 }
